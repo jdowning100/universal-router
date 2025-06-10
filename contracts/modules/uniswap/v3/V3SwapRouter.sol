@@ -12,6 +12,7 @@ import {Permit2Payments} from '../../Permit2Payments.sol';
 import {UniswapImmutables} from '../UniswapImmutables.sol';
 import {MaxInputAmount} from '../../../libraries/MaxInputAmount.sol';
 import {ERC20} from 'solmate/src/tokens/ERC20.sol';
+import {IUniswapV3Factory} from '@uniswap/v3-core/contracts/interfaces/IUniswapV3Factory.sol';
 
 /// @title Router for Uniswap v3 Trades
 abstract contract V3SwapRouter is UniswapImmutables, Permit2Payments, IUniswapV3SwapCallback {
@@ -154,19 +155,6 @@ abstract contract V3SwapRouter is UniswapImmutables, Permit2Payments, IUniswapV3
 
     function computePoolAddress(address tokenA, address tokenB, uint24 fee) private view returns (address pool) {
         if (tokenA > tokenB) (tokenA, tokenB) = (tokenB, tokenA);
-        pool = address(
-            uint160(
-                uint256(
-                    keccak256(
-                        abi.encodePacked(
-                            hex'ff',
-                            UNISWAP_V3_FACTORY,
-                            keccak256(abi.encode(tokenA, tokenB, fee)),
-                            UNISWAP_V3_POOL_INIT_CODE_HASH
-                        )
-                    )
-                )
-            )
-        );
+        pool = IUniswapV3Factory(UNISWAP_V3_FACTORY).getPool(tokenA, tokenB, fee);
     }
 }

@@ -12,6 +12,9 @@ import {IUniversalRouter} from './interfaces/IUniversalRouter.sol';
 import {MigratorImmutables, MigratorParameters} from './modules/MigratorImmutables.sol';
 
 contract UniversalRouter is IUniversalRouter, Dispatcher {
+    mapping(bytes32 => uint64) public commitsToRevealHeight;
+    uint256 public constant COMMIT_REVEAL_HEIGHT = 3;
+
     constructor(RouterParameters memory params)
         UniswapImmutables(
             UniswapParameters(params.v2Factory, params.v3Factory, params.pairInitCodeHash, params.poolInitCodeHash)
@@ -32,21 +35,47 @@ contract UniversalRouter is IUniversalRouter, Dispatcher {
     }
 
     /// @inheritdoc IUniversalRouter
-    function execute(bytes calldata commands, bytes[] calldata inputs, uint256 deadline)
+    function execute(bytes calldata commands, bytes[] calldata inputs, uint256 deadline, uint256 entropy)
         external
         payable
+        override
         checkDeadline(deadline)
     {
-        execute(commands, inputs);
+        execute(commands, inputs, entropy);
     }
 
-    /// @inheritdoc Dispatcher
-    function execute(bytes calldata commands, bytes[] calldata inputs) public payable override isNotLocked {
+    /// @notice Executes encoded commands along with provided inputs.
+    /// @param commands A set of concatenated commands, each 1 byte in length
+    /// @param inputs An array of byte strings containing abi encoded inputs for each command
+    function execute(bytes calldata commands, bytes[] calldata inputs, uint256 entropy) public payable isNotLocked {
         bool success;
         bytes memory output;
         uint256 numCommands = commands.length;
         if (inputs.length != numCommands) revert LengthMismatch();
+        
+        reveal(commands, inputs, entropy);
 
+        // loop through all given commands, execute them and pass along outputs as defined
+        for (uint256 commandIndex = 0; commandIndex < numCommands; commandIndex++) {
+            bytes1 command = commands[commandIndex];
+
+            bytes calldata input = inputs[commandIndex];
+
+            (success, output) = dispatch(command, input);
+
+            if (!success && successRequired(command)) {
+                revert ExecutionFailed({commandIndex: commandIndex, message: output});
+            }
+        }
+    }
+
+    // This function is used only for the EXECUTE_SUB_PLAN command and does not require reveal because the reveal is done in the initial plan
+    function execute(bytes calldata commands, bytes[] calldata inputs) external payable override isNotLocked {
+        bool success;
+        bytes memory output;
+        uint256 numCommands = commands.length;
+        if (inputs.length != numCommands) revert LengthMismatch();
+        require(msg.sender == address(this), "Only callable by self");
         // loop through all given commands, execute them and pass along outputs as defined
         for (uint256 commandIndex = 0; commandIndex < numCommands; commandIndex++) {
             bytes1 command = commands[commandIndex];
@@ -63,5 +92,19 @@ contract UniversalRouter is IUniversalRouter, Dispatcher {
 
     function successRequired(bytes1 command) internal pure returns (bool) {
         return command & Commands.FLAG_ALLOW_REVERT == 0;
+    }
+
+    function commit(bytes32 h) external override {
+        require(commitsToRevealHeight[h]==0, "Duplicate commit");
+        commitsToRevealHeight[h] = uint64(block.number + COMMIT_REVEAL_HEIGHT);
+    }
+
+    // reveal() checks the validity and timing of the commitment
+    // tx.origin is used to ensure that only the intended caller can reveal the commitment
+    function reveal(bytes calldata commands, bytes[] calldata inputs, uint256 entropy) internal {
+        bytes32 h = keccak256(abi.encode(commands, inputs, entropy, tx.origin));
+        uint64 valid = commitsToRevealHeight[h];
+        require(valid !=0 && block.number >= valid, "Not ready");
+        delete commitsToRevealHeight[h];
     }
 }
