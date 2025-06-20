@@ -14,6 +14,9 @@ import {MigratorImmutables, MigratorParameters} from './modules/MigratorImmutabl
 contract UniversalRouter is IUniversalRouter, Dispatcher {
     mapping(bytes32 => uint64) public commitsToRevealHeight;
     uint256 public constant COMMIT_REVEAL_HEIGHT = 3;
+    uint256 public constant COMMIT_EXPIRY_HEIGHT = 10;
+    bool public requireCommit;
+    address public owner;
 
     constructor(RouterParameters memory params)
         UniswapImmutables(
@@ -22,7 +25,9 @@ contract UniversalRouter is IUniversalRouter, Dispatcher {
         V4SwapRouter(params.v4PoolManager)
         PaymentsImmutables(PaymentsParameters(params.permit2, params.weth9))
         MigratorImmutables(MigratorParameters(params.v3NFTPositionManager, params.v4PositionManager))
-    {}
+    {
+        owner = tx.origin;
+    }
 
     modifier checkDeadline(uint256 deadline) {
         if (block.timestamp > deadline) revert TransactionDeadlinePassed();
@@ -52,8 +57,8 @@ contract UniversalRouter is IUniversalRouter, Dispatcher {
         bytes memory output;
         uint256 numCommands = commands.length;
         if (inputs.length != numCommands) revert LengthMismatch();
-        
-        reveal(commands, inputs, entropy);
+
+        if (requireCommit) reveal(commands, inputs, entropy);
 
         // loop through all given commands, execute them and pass along outputs as defined
         for (uint256 commandIndex = 0; commandIndex < numCommands; commandIndex++) {
@@ -101,10 +106,25 @@ contract UniversalRouter is IUniversalRouter, Dispatcher {
 
     // reveal() checks the validity and timing of the commitment
     // tx.origin is used to ensure that only the intended caller can reveal the commitment
+    // tx.gasprice is used to ensure that the commitment is valid for the current gas price
+    // this makes it more difficult to sandwich a transaction because block tx ordering is determined by gas price
     function reveal(bytes calldata commands, bytes[] calldata inputs, uint256 entropy) internal {
-        bytes32 h = keccak256(abi.encode(commands, inputs, entropy, tx.origin));
+        bytes32 h = keccak256(abi.encode(commands, inputs, entropy, tx.origin, tx.gasprice));
         uint64 valid = commitsToRevealHeight[h];
         require(valid !=0 && block.number >= valid, "Not ready");
+        require(block.number - valid < COMMIT_EXPIRY_HEIGHT, "Expired");
         delete commitsToRevealHeight[h];
+    }
+
+    // setRequireCommit is used to allow the owner to change the commitment requirement
+    function setRequireCommit(bool _requireCommit) external {
+        require(msg.sender == owner, "Only owner can set requireCommit");
+        requireCommit = _requireCommit;
+    }
+
+    // setOwner is used to allow the owner to change the owner
+    function setOwner(address _owner) external {
+        require(msg.sender == owner, "Only owner can set owner");
+        owner = _owner;
     }
 }
